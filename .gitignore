@@ -1,0 +1,45 @@
+node_modules
+.next
+.vercel
+out
+build
+dist
+coverage
+
+# Local environment files. Keep the safe template in version control.
+.env*
+!.env.example
+
+# Local Supabase CLI metadata and database backups may contain sensitive data.
+supabase/.temp/
+database-backup/
+
+# Private keys, credential exports, and local token files.
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+*.jks
+*.keystore
+*.secret
+*.token
+*.credentials
+client_secret*.json
+*secret*.json
+*credentials*.json
+*service-account*.json
+*token*.json
+*oauth*client*.json
+
+# Common database dump/backup formats outside the dedicated backup folder.
+*.dump
+*.bak
+*.backup
+*.sql.gz
+
+npm-debug.log*
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+testgenie-mvp.zip
