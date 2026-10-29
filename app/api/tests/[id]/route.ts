@@ -108,6 +108,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const reviewedQuestions = chunks.length > 0
     ? await reviewGroundingSupport(checked.questions, chunks)
     : checked.questions;
+  if (reviewedQuestions.some((question) => !question.sourceChunkIds?.length)) {
+    return fail("Every saved question needs a retrieved syllabus source. Regenerate or revise the unsupported questions.", 422);
+  }
 
   const { error: updateError } = await supabase.rpc("update_test_questions", {
     p_test_id: id,
@@ -132,7 +135,13 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     })),
   });
 
-  if (updateError) return fail("Failed to save test changes. Please try again.", 500);
+  if (updateError) {
+    const validationFailure = /invalid question|source evidence|source (?:chunk|ids)|gemini chunks|syllabus scope|draft tests can be edited|only draft/i
+      .test(updateError.message);
+    return validationFailure
+      ? fail("Draft changes were rejected. Check that every question has in-scope Gemini syllabus evidence and that the test is still a draft.", 422)
+      : fail("Failed to save test changes. Please try again.", 500);
+  }
 
   return ok({ updated: true });
 }

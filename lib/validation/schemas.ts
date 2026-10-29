@@ -124,7 +124,18 @@ export const updateTestSchema = z.object({
 
 export const createFormRequestSchema = z.object({
   testId: z.string().uuid(),
+  formId: z.string().trim().min(10).max(200).regex(/^[A-Za-z0-9_-]+$/).optional(),
 });
+
+export const googleFormScoreWebhookSchema = z.object({
+  formId: z.string().trim().min(10).max(200).regex(/^[A-Za-z0-9_-]+$/),
+  responseId: z.string().trim().min(1).max(200),
+  studentName: z.string().trim().max(200).optional(),
+  studentEmail: z.string().trim().max(320).optional(),
+  score: z.number().int().min(0).max(50),
+  totalQuestions: z.number().int().min(1).max(50),
+  submittedAt: z.string().datetime({ offset: true }).optional(),
+}).strict();
 
 export const publishTestRequestSchema = z.object({
   facultyReviewConfirmed: z.literal(true),

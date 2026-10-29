@@ -78,6 +78,9 @@ export async function POST(request: NextRequest) {
     correctAnswerIndex: question.correctAnswerIndex as Question["correctAnswerIndex"],
   }));
   const quality = await reviewGroundingSupport(assessQuestionQuality(candidates, chunks).questions, chunks);
+  if (quality.some((question) => !question.sourceChunkIds?.length)) {
+    return fail("Every saved question needs a retrieved syllabus source. Regenerate or revise the unsupported questions.", 422);
+  }
   try {
     assertQuestionProvenance(quality, chunks, {
       syllabusId,
@@ -112,7 +115,14 @@ export async function POST(request: NextRequest) {
     })),
   });
 
-  if (saveError || !test || typeof test !== "object" || !("id" in test)) {
+  if (saveError) {
+    const validationFailure = /invalid draft|invalid question|source evidence|source (?:chunk|ids)|gemini chunks|syllabus scope|options must|explanation/i
+      .test(saveError.message);
+    return validationFailure
+      ? fail("Draft not saved: review the question content and ensure every question has valid in-scope Gemini syllabus evidence.", 422)
+      : fail("Failed to save the draft. Please try again.", 500);
+  }
+  if (!test || typeof test !== "object" || !("id" in test)) {
     return fail("Failed to save the draft. Please try again.", 500);
   }
 

@@ -62,6 +62,8 @@ export async function POST(request: NextRequest) {
     questionType: "mcq",
   };
 
+  const correlationId = crypto.randomUUID();
+  let stage = "retrieve";
   try {
     const chunks = await retrieveChunks(supabase, {
       syllabusId: input.syllabusId,
@@ -80,13 +82,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    stage = "gemini_generate";
     const generatedQuestions = await generateGroundedQuestions(config, chunks);
+    stage = "quality";
     const { questions: qualityChecked } = assessQuestionQuality(generatedQuestions, chunks);
+    if (qualityChecked.some((question) => !question.sourceChunkIds?.length)) {
+      return fail(
+        "The retrieved syllabus context could not support every generated question. Choose another scope or reduce the question count.",
+        422
+      );
+    }
+    stage = "provenance";
     assertQuestionProvenance(qualityChecked, chunks, {
       syllabusId: config.syllabusId,
       unit: config.unit,
       topic: config.topic,
     });
+    stage = "support_review";
     const questions = await reviewGroundingSupport(qualityChecked, chunks);
     const evidenceById = new Map(chunks.map((chunk) => [chunk.chunkId, chunk]));
     const questionsWithEvidence = questions.map((question) => ({
@@ -105,8 +117,16 @@ export async function POST(request: NextRequest) {
     }));
     return ok({ questions: questionsWithEvidence, syllabusId: config.syllabusId, generationConfig: config });
   } catch (err) {
-    if (err instanceof GenerationError) return fail(err.message, 422);
-    if (err instanceof RetrievalError) return fail("Syllabus retrieval failed. Please try again.", 503);
-    return fail("AI generation failed. Please try again.", 500);
+    // Only the error class and a length-capped message are logged: no keys, syllabus text or user data.
+    console.error("Generation request failed", {
+      correlationId,
+      stage,
+      errorName: err instanceof Error ? err.name.slice(0, 80) : "NonErrorThrown",
+      message: err instanceof Error ? err.message.replace(/\s+/g, " ").slice(0, 200) : "Non-Error exception",
+    });
+    const ref = ` (ref ${correlationId.slice(0, 8)})`;
+    if (err instanceof GenerationError) return fail(err.message + ref, 422);
+    if (err instanceof RetrievalError) return fail(`Syllabus retrieval failed. Please try again.${ref}`, 503);
+    return fail(`AI generation failed at the ${stage.replace(/_/g, " ")} step. Please try again.${ref}`, 500);
   }
 }

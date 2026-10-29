@@ -2,10 +2,14 @@ import type { Question } from "@/types/question";
 import type { RetrievedChunk } from "@/types/generation";
 
 const STOP_WORDS = new Set([
-  "about", "after", "again", "among", "also", "are", "because", "been", "being", "between",
-  "could", "does", "from", "have", "into", "more", "most", "only", "other", "should", "some",
-  "than", "that", "their", "there", "these", "they", "this", "those", "through", "under", "using",
-  "what", "when", "where", "which", "while", "with", "would", "your", "true", "false",
+  "a", "an", "the", "in", "on", "at", "to", "of", "by", "is", "it", "as", "or", "if", "be", "do",
+  "we", "he", "so", "up", "no", "my", "me", "all", "and", "any", "but", "can", "day", "did", "for",
+  "get", "had", "has", "her", "him", "his", "how", "its", "let", "may", "new", "not", "now", "off",
+  "old", "one", "our", "out", "own", "say", "see", "she", "too", "two", "use", "way", "who", "why",
+  "yes", "yet", "about", "after", "again", "among", "also", "are", "because", "been", "being",
+  "between", "could", "does", "from", "have", "into", "more", "most", "only", "other", "should",
+  "some", "than", "that", "their", "there", "these", "they", "this", "those", "through", "under",
+  "using", "what", "when", "where", "which", "while", "with", "would", "your", "true", "false",
 ]);
 
 interface QuestionQualityMetadata {
@@ -32,13 +36,16 @@ export function assessQuestionQuality(
   const metadata: QuestionQualityMetadata[] = input.map((question) => {
     const questionTerms = terms(question.question);
     const answerTerms = terms(question.options[question.correctAnswerIndex] ?? "");
+    const explanationTerms = terms(question.explanation ?? "");
     const matches = chunks
       .map((chunk) => {
         const chunkTerms = terms(chunk.content);
         const questionOverlap = intersectionSize(questionTerms, chunkTerms);
         const answerOverlap = intersectionSize(answerTerms, chunkTerms);
-        const score = questionOverlap + answerOverlap * 2;
-        return { chunk, questionOverlap, answerOverlap, score };
+        const explanationOverlap = intersectionSize(explanationTerms, chunkTerms);
+        const effectiveAnswerOverlap = answerTerms.size > 0 ? answerOverlap : explanationOverlap;
+        const score = questionOverlap + effectiveAnswerOverlap * 2;
+        return { chunk, questionOverlap, answerOverlap: effectiveAnswerOverlap, score };
       })
       .filter((match) => match.questionOverlap >= Math.min(2, questionTerms.size) && match.answerOverlap > 0)
       .sort((a, b) => b.score - a.score)
@@ -102,7 +109,7 @@ function terms(value: string): Set<string> {
   return new Set(
     normalize(value)
       .split(" ")
-      .filter((term) => term.length >= 4 && !STOP_WORDS.has(term))
+      .filter((term) => term.length >= 2 && !STOP_WORDS.has(term))
   );
 }
 

@@ -2,7 +2,8 @@
 
 AI-powered test generator for faculty. Upload a syllabus, get AI-drafted
 multiple-choice questions, review and edit them, then publish a self-grading
-Google Form -- scores flow back into the dashboard.
+Google Form. When the Forms-bound Apps Script and webhook are configured,
+graded scores appear in the faculty dashboard.
 
 ## Requirements
 
@@ -43,22 +44,39 @@ Copy-Item .env.example .env.local
 | `GOOGLE_CLIENT_ID` | Google Cloud -> APIs & Services -> Credentials | Only for Google Forms export |
 | `GOOGLE_CLIENT_SECRET` | Google Cloud -> APIs & Services -> Credentials | Only for Google Forms export |
 | `GOOGLE_REDIRECT_URI` | `http://localhost:3000/api/google/callback` locally | Only for Google Forms export |
+| `GOOGLE_FORMS_WEBHOOK_SECRET` | Generate a private shared secret for the Apps Script score webhook | Only for score ingestion |
 | `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` locally | Yes |
 
 Never commit `.env.local`. Nothing prefixed `NEXT_PUBLIC_` should ever hold a secret.
+Keep `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_CLIENT_SECRET`, `GEMINI_API_KEY`, and
+`GOOGLE_FORMS_WEBHOOK_SECRET` server-side. Set the webhook secret in the Apps
+Script project's Script Properties; never put it in a form response or browser
+code.
 
 ## 3. Supabase setup
 
 1. Create a project at https://supabase.com.
-2. Open the SQL Editor and run the full contents of
-   [`supabase/migrations/001_initial_schema.sql`](supabase/migrations/001_initial_schema.sql).
-   This creates `profiles`, `tests`, `questions`, `scores`, `google_credentials`,
-   all indexes, and Row Level Security policies that scope every table to its
-   owning faculty member.
-3. In Authentication -> Providers, make sure Email is enabled.
-4. In Authentication -> URL Configuration, add `http://localhost:3000/auth/callback`
+2. Review the SQL migration history and apply the intended migration set in
+   order to a new project. Do not assume the local migration files match an
+   existing project's schema. In particular, migrations 012 and 013 are local
+   score-idempotency and Google Form retry/credential-ACL candidates; they have
+   not been confirmed against or applied to a live project. Before using them
+   on an existing project, confirm its project ref and migration history, take
+   a recoverable backup, and compare the read-only
+   [`preflight_test_workflow_v2.sql`](supabase/repairs/preflight_test_workflow_v2.sql)
+   output with the repair candidates. Migration 013 changes browser access to
+   `google_credentials`; reconcile it with
+   [`google_credentials_access_hotfix.sql`](supabase/repairs/google_credentials_access_hotfix.sql)
+   before applying either. Never run the workflow repair candidate as a
+   migration or without its documented prerequisites.
+3. The initial schema file documents the base tables, but deployment must
+   include the approved migrations that define the current application RPCs
+   and policies. Check the live schema and grants before enabling draft,
+   publish, Forms creation, or score ingestion.
+4. In Authentication -> Providers, make sure Email is enabled.
+5. In Authentication -> URL Configuration, add `http://localhost:3000/auth/callback`
    as a redirect URL (and your production URL when you deploy).
-5. Copy the Project URL, anon key, and service_role key into `.env.local`.
+6. Copy the Project URL, anon key, and service_role key into `.env.local`.
 
 ## 4. Gemini setup
 
@@ -87,24 +105,39 @@ edited, and saved locally; only the "Create Google Form" step is unavailable.
    / `GOOGLE_CLIENT_SECRET`.
 7. From the Generate page, click "Connect Google" (shown once you try to
    create a form without a connected account) to grant TestGenie access.
+8. TestGenie requests the Forms body and Drive file scopes. The app stores
+   OAuth tokens server-side; do not expose them to the browser.
 
 ### Known Google Forms API limitation
 
 The Forms API does not expose every setting in the Forms UI. TestGenie sets
 `quizSettings.isQuiz = true` and a `grading.correctAnswers` block on every
-question, which is what makes Google Forms auto-grade responses -- this is
-fully supported and really happens. Two things the API does **not** expose,
+question in the API request to configure quiz grading. The request has not been
+verified against a live Google account. Two things the API does **not** expose,
 so they are not faked:
 
 - "Collect email addresses" and "Release grade" timing are not settable via
   the API. After a form is created, open it once in the Google Forms UI and
   turn these on manually if you want them.
-- Reading response scores back into TestGenie's `scores` table is not part
-  of the Forms API itself. Google Forms can send response data to a Google
-  Sheet or an Apps Script trigger; wiring a specific export target
-  (Sheet, Apps Script webhook, etc.) is a follow-up integration, not
-  included in this MVP. The `scores` table and `/dashboard/scores` page are
-  ready to receive rows the moment that pipeline is connected.
+- Reading responses is not performed through a Forms polling API in this app.
+  The repository includes a Forms-bound Apps Script submit trigger that posts
+  graded scores to `/api/scores/ingest`. Configure the webhook secret in server
+  deployment and Apps Script properties, install and authorize the trigger for
+  each form, and apply the reviewed idempotency migration before relying on
+  duplicate-safe ingestion. These external steps have not been verified here.
+
+### Score ingestion setup
+
+1. Configure `GOOGLE_FORMS_WEBHOOK_SECRET` in the server environment and set
+   the identical secret plus the `/api/scores/ingest` URL in the form's Apps
+   Script Script Properties.
+2. Add `scripts/google-forms-score-sync.gs` to the Forms-bound Apps Script
+   project and install an on-form-submit trigger for the handler.
+3. Authorize the script and verify with an approved test response. Confirm
+   respondent email collection in the Form settings if email is needed.
+4. Review and apply `supabase/migrations/012_idempotent_google_form_scores.sql`
+   only after confirming the intended project's migration state. Without the
+   unique index, duplicate-safe upsert is unavailable.
 
 ## 6. Local development
 

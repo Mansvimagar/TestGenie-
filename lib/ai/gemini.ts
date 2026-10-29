@@ -8,10 +8,11 @@ import { generateMockQuestions } from "./mock";
 import { getAIProvider } from "./provider";
 import type { GenerationConfig, RetrievedChunk } from "@/types/generation";
 import { parseGroundedQuestionResponse } from "./grounded-response";
+import { GENERATION_TIMEOUT_MS, resolveGenerationModel } from "./model";
 
 export class GenerationError extends Error {}
 
-const GENERATION_MODEL = "gemini-3.8-flash";
+const GENERATION_MODEL = resolveGenerationModel();
 
 interface GenerateParams {
   syllabusText: string;
@@ -92,11 +93,12 @@ export async function generateGroundedQuestions(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new GenerationError("Grounded generation is not configured.");
 
-  const client = new GoogleGenAI({ apiKey });
+  const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: GENERATION_TIMEOUT_MS } });
   const prompt = buildGroundedGenerationPrompt({ config, chunks });
   let malformedResponse = false;
   for (let attempt = 0; attempt < 2; attempt++) {
     let raw: string;
+    const startedAt = Date.now();
     try {
       const response = await client.models.generateContent({
         model: GENERATION_MODEL,
@@ -115,6 +117,12 @@ export async function generateGroundedQuestions(
         providerStatus:
           safeProviderField(err, "status") ?? safeProviderField(err, "statusCode"),
         providerCode: safeProviderField(err, "code"),
+        causeCode: safeProviderField((err as { cause?: unknown } | null)?.cause, "code"),
+        model: GENERATION_MODEL,
+        attempt: attempt + 1,
+        elapsedMs: Date.now() - startedAt,
+        promptChars: prompt.length,
+        chunkCount: chunks.length,
         message: sanitizeGenerationErrorMessage(err),
       });
       throw new GenerationError("Grounded AI generation failed. Please try again.");

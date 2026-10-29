@@ -92,23 +92,25 @@ Known limitation (see README): "collect email" and "release grade" timing
 aren't settable via the API -- toggle those manually in the Forms UI once,
 if you want them.
 
-## Step 6 -- Scores (manual verification for now)
+## Step 6 -- Scores (implementation present; external setup remains)
 
-The `scores` table and `/dashboard/scores` page are built and read live
-Supabase data, but nothing yet writes rows into `scores` automatically --
-Google Forms doesn't push graded responses anywhere on its own.
+The repository includes a Forms-bound Apps Script submit trigger and the
+authenticated-secret endpoint `/api/scores/ingest`. The endpoint maps a Form
+ID to a published test and upserts by the Google response ID when migration
+012's unique index is installed. The dashboard reads saved scores under the
+faculty ownership policy.
 
-- [ ] To see the scores dashboard working, insert a test row manually via
-      the Supabase Table Editor (`scores` table: `test_id`, `student_name`,
-      `student_email`, `score`, `total_questions`, `percentage`)
-- [ ] Confirm it shows up on `/dashboard/scores`, and search/filter/sort work
+- [ ] Confirm migration 012 against the intended Supabase project and apply it
+      through the reviewed migration workflow.
+- [ ] Set `GOOGLE_FORMS_WEBHOOK_SECRET` in the server environment and the
+      matching Apps Script Script Properties.
+- [ ] Install and authorize the submit trigger on a test Form.
+- [ ] Submit an approved test response and verify one score appears in the
+      owning faculty dashboard; resend the same response to verify idempotency.
 
-**Next real task (not yet built)**: wire an Apps Script trigger (or a Sheet
-+ scheduled sync) on each created Form to POST graded responses into
-`/api/scores` or directly into the `scores` table via the service role key.
-This is the one genuinely open integration piece -- everything else in the
-pipeline (auth, generation, editing, storage, Forms creation) is complete
-and working end to end.
+The integration has not been exercised with a real Google response. Do not
+write test rows directly into production or treat the local implementation as
+verified until these controlled checks pass.
 
 ## Step 7 -- Deploy
 

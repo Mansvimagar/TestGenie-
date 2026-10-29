@@ -43,6 +43,12 @@ export async function exchangeCodeAndStore(userId: string, code: string): Promis
         "https://myaccount.google.com/permissions and reconnect to try again."
     );
   }
+  if (tokens.scope) {
+    const grantedScopes = new Set(tokens.scope.split(/\s+/));
+    if (GOOGLE_SCOPES.some((scope) => !grantedScopes.has(scope))) {
+      throw new Error("Google did not grant the Forms and Drive permissions required by TestGenie.");
+    }
+  }
 
   const supabase = createServiceRoleClient();
   const { error } = await supabase.from("google_credentials").upsert({

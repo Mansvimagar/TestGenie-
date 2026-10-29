@@ -3,7 +3,12 @@ import { google, forms_v1 } from "googleapis";
 import type { Question } from "@/types/question";
 import { getAuthorizedClientForUser } from "./auth";
 
-export class GoogleFormsError extends Error {}
+export class GoogleFormsError extends Error {
+  constructor(message: string, readonly formId?: string, readonly recoveryRequired = Boolean(formId)) {
+    super(message);
+    this.name = "GoogleFormsError";
+  }
+}
 
 export interface CreatedForm {
   formId: string;
@@ -17,6 +22,8 @@ export async function createGoogleForm(params: {
   title: string;
   subject: string;
   questions: Question[];
+  existingFormId?: string;
+  onFormCreated?: (formId: string) => Promise<void>;
 }): Promise<CreatedForm> {
   const auth = await getAuthorizedClientForUser(params.userId);
   if (!auth) {
@@ -27,17 +34,36 @@ export async function createGoogleForm(params: {
 
   const forms = google.forms({ version: "v1", auth });
 
-  let formId: string;
-  try {
-    const created = await forms.forms.create({
-      requestBody: { info: { title: params.title, documentTitle: params.title } },
-    });
-    if (!created.data.formId) {
-      throw new GoogleFormsError("Google did not return a form ID.");
+  const formId = params.existingFormId ?? await createEmptyForm(forms, params.title);
+  if (params.questions.length === 0) throw new GoogleFormsError("A form needs at least one question.", formId);
+  if (!params.existingFormId && params.onFormCreated) {
+    try {
+      await params.onFormCreated(formId);
+    } catch {
+      throw new GoogleFormsError("The Google Form was created, but its recovery reference could not be recorded.", formId);
     }
-    formId = created.data.formId;
-  } catch (err) {
-    throw new GoogleFormsError(describeGoogleError(err, "create the form"));
+  }
+
+  if (params.existingFormId) {
+    let existing;
+    try {
+      existing = await forms.forms.get({ formId });
+    } catch (err) {
+      throw new GoogleFormsError(describeGoogleError(err, "recover the existing form"), formId);
+    }
+    if (existing.data.items?.length) {
+      if (!formMatchesQuestions(existing.data, params.questions)) {
+        throw new GoogleFormsError(
+          "The existing Google Form has different questions. It was left unchanged; contact support before retrying.",
+          formId,
+          false
+        );
+      }
+      if (!existing.data.responderUri) {
+        throw new GoogleFormsError("Google did not return a responder URL for the existing form.", formId);
+      }
+      return { formId, formUrl: existing.data.responderUri };
+    }
   }
 
   const requests: forms_v1.Schema$Request[] = [
@@ -61,21 +87,56 @@ export async function createGoogleForm(params: {
   try {
     await forms.forms.batchUpdate({ formId, requestBody: { requests } });
   } catch (err) {
-    throw new GoogleFormsError(describeGoogleError(err, "add questions to the form"));
+    throw new GoogleFormsError(describeGoogleError(err, "add questions to the form"), formId);
   }
 
   let formUrl: string;
   try {
     const fetched = await forms.forms.get({ formId });
     if (!fetched.data.responderUri) {
-      throw new GoogleFormsError("Google did not return a responder URL.");
+      throw new GoogleFormsError("Google did not return a responder URL.", formId);
     }
     formUrl = fetched.data.responderUri;
   } catch (err) {
-    throw new GoogleFormsError(describeGoogleError(err, "read back the form URL"));
+    throw new GoogleFormsError(describeGoogleError(err, "read back the form URL"), formId);
   }
 
   return { formId, formUrl };
+}
+
+async function createEmptyForm(
+  forms: ReturnType<typeof google.forms>,
+  title: string
+): Promise<string> {
+  try {
+    const created = await forms.forms.create({
+      requestBody: { info: { title, documentTitle: title } },
+    });
+    if (!created.data.formId) throw new GoogleFormsError("Google did not return a form ID.");
+    return created.data.formId;
+  } catch (err) {
+    if (err instanceof GoogleFormsError) throw err;
+    throw new GoogleFormsError(describeGoogleError(err, "create the form"));
+  }
+}
+
+function formMatchesQuestions(form: forms_v1.Schema$Form, questions: Question[]): boolean {
+  const items = form.items ?? [];
+  if (form.settings?.quizSettings?.isQuiz !== true) return false;
+  return items.length === questions.length && items.every((item, index) => {
+    const expected = questions[index];
+    const actualQuestion = item.questionItem?.question;
+    const actualOptions = actualQuestion?.choiceQuestion?.options?.map((option) => option.value ?? "") ?? [];
+    const correctAnswers = actualQuestion?.grading?.correctAnswers?.answers?.map((answer) => answer.value ?? "") ?? [];
+    return item.title === expected.question
+      && actualQuestion?.choiceQuestion?.type === "RADIO"
+      && actualQuestion.required === true
+      && actualOptions.length === expected.options.length
+      && actualOptions.every((option, optionIndex) => option === expected.options[optionIndex])
+      && actualQuestion.grading?.pointValue === 1
+      && correctAnswers.length === 1
+      && correctAnswers[0] === expected.options[expected.correctAnswerIndex];
+  });
 }
 
 function buildQuestionRequest(q: Question, index: number): forms_v1.Schema$Request {
@@ -105,6 +166,11 @@ function buildQuestionRequest(q: Question, index: number): forms_v1.Schema$Reque
 }
 
 function describeGoogleError(err: unknown, action: string): string {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = (err instanceof Error ? err.message : String(err))
+    .replace(/AIza[\w-]{20,}/g, "[REDACTED]")
+    .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [REDACTED]")
+    .replace(/\b(access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization)\s*[:=]\s*[^\s&,]+/gi, "$1=[REDACTED]")
+    .replace(/\s+/g, " ")
+    .slice(0, 240);
   return `Unable to ${action}: ${message}`;
 }

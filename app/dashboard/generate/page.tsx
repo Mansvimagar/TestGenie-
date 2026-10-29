@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ export default function GeneratePage() {
   const [generatingLabel, setGeneratingLabel] = useState("Retrieving syllabus context...");
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const saveDraftInFlight = useRef(false);
   const router = useRouter();
 
   async function handleConfigSubmit(nextConfig: TestConfig) {
@@ -85,6 +86,7 @@ export default function GeneratePage() {
   }
 
   async function handleSaveDraft() {
+    if (saveDraftInFlight.current) return;
     if (!generationConfig) {
       setError("Generation settings are unavailable. Return to configuration and try again.");
       return;
@@ -97,7 +99,9 @@ export default function GeneratePage() {
 
     setError(null);
     setSaveMessage(null);
+    saveDraftInFlight.current = true;
     setSaving(true);
+    let saved = false;
     try {
       const response = await fetch("/api/tests", {
         method: "POST",
@@ -119,12 +123,14 @@ export default function GeneratePage() {
         throw new Error(result?.error || "Unable to save draft. Please try again.");
       }
 
+      saved = true;
       setSaveMessage("Draft saved. Opening the saved assessment...");
       router.push(`/dashboard/tests/${result.data.test.id}`);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Unable to save draft. Please try again.");
     } finally {
       setSaving(false);
+      if (!saved) saveDraftInFlight.current = false;
     }
   }
 

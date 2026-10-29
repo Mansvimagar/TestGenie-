@@ -10,7 +10,7 @@ export default async function ScoresPage({
   const { testId } = await searchParams;
   const supabase = await createClient();
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("scores")
     .select("*, tests!inner(title)")
     .order("submitted_at", { ascending: false });
@@ -33,7 +33,13 @@ export default async function ScoresPage({
         <h1 className="text-xl font-semibold text-slate-100">Scores</h1>
         <p className="text-sm text-slate-400">Results from students who submitted your Google Forms.</p>
       </div>
-      <ScoresTable scores={scores} initialTestFilter={testId} />
+      {error ? (
+        <p role="alert" className="text-sm text-rose-300">
+          Scores could not be loaded. Refresh the page or try again later.
+        </p>
+      ) : (
+        <ScoresTable scores={scores} initialTestFilter={testId} />
+      )}
     </div>
   );
 }

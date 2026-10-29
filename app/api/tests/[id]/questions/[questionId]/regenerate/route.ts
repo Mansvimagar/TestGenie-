@@ -96,30 +96,34 @@ export async function POST(
     ).questions;
     const candidate = qualityResults.slice(-1);
     const [replacement] = await reviewGroundingSupport(candidate, chunks);
-    const { data: updatedQuestion, error: updateError } = await supabase
-      .from("questions")
-      .update({
+    if (!replacement?.sourceChunkIds?.length) {
+      return fail("No retrieved syllabus source supports the regenerated question. The saved question was left unchanged.", 422);
+    }
+    const { error: updateError } = await supabase.rpc("replace_test_question", {
+      p_test_id: testId,
+      p_question_id: questionId,
+      p_question: {
         topic: replacement.topic,
         question: replacement.question,
         options: replacement.options,
-        correct_answer_index: replacement.correctAnswerIndex,
+        correctAnswerIndex: replacement.correctAnswerIndex,
         explanation: replacement.explanation,
-        source_chunk_ids: replacement.sourceChunkIds ?? [],
-        grounding_status: "needs_review",
-        validation_status: replacement.validationStatus ?? "unique",
-        validation_metadata: {
+        sourceChunkIds: replacement.sourceChunkIds ?? [],
+        validationStatus: replacement.validationStatus ?? "unique",
+        validationMetadata: {
           ...(replacement.validationMetadata ?? {}),
           supportAssessment: replacement.supportAssessment ?? "uncertain",
           supportReviewNote: replacement.supportReviewNote ?? "Faculty verification required.",
           qualityIssues: replacement.qualityIssues ?? [],
         },
-      })
-      .eq("id", questionId)
-      .eq("test_id", testId)
-      .select("id")
-      .maybeSingle();
-    if (updateError) return fail("Failed to save the regenerated question.", 500);
-    if (!updatedQuestion) return fail("Question no longer exists in this test.", 404);
+      },
+    });
+    if (updateError) {
+      const rejected = /draft|source|syllabus|question|options|explanation|scope/i.test(updateError.message);
+      return rejected
+        ? fail("Regenerated question was rejected. Confirm the test is a draft and the evidence matches its syllabus scope.", 422)
+        : fail("Failed to save the regenerated question.", 500);
+    }
     return ok({ question: replacement });
   } catch (error) {
     if (error instanceof GenerationError) return fail(error.message, 422);

@@ -20,7 +20,7 @@ export function assertQuestionProvenance(
 
   for (const question of questions) {
     const ids = question.sourceChunkIds ?? [];
-    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !eligibleIds.has(id))) {
+    if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== "string" || !eligibleIds.has(id))) {
       throw new ProvenanceValidationError("Question provenance does not match retrieved syllabus evidence.");
     }
   }

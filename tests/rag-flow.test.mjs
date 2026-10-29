@@ -261,6 +261,25 @@ test("quality checks mark duplicates and invalid options for faculty review", ()
   assert.ok(result.questions.every((question) => question.groundingStatus === "needs_review"));
 });
 
+test("quality checks correctly match technical acronyms and short-answer terms", () => {
+  const { assessQuestionQuality } = createTsLoader()("lib/validation/question-quality.ts");
+  const technicalChunk = makeChunk({
+    chunkId: "chunk-tcp",
+    content: "Transmission Control Protocol (TCP) provides reliable connection-oriented transport.",
+  });
+  const acronymQuestion = makeQuestion({
+    id: "q-acronym",
+    question: "Which transport protocol guarantees reliable delivery?",
+    options: ["TCP", "UDP", "IP", "DNS"],
+    correctAnswerIndex: 0,
+    explanation: "TCP is connection-oriented and reliable according to the syllabus.",
+  });
+  const result = assessQuestionQuality([acronymQuestion], [technicalChunk]);
+  assert.equal(result.questions[0].sourceChunkIds.length, 1);
+  assert.equal(result.questions[0].sourceChunkIds[0], "chunk-tcp");
+  assert.equal(result.questions[0].qualityIssues.length, 0);
+});
+
 test("provenance accepts retrieved IDs only when they match the selected scope", () => {
   const { assertQuestionProvenance, ProvenanceValidationError } = createTsLoader()("lib/rag/provenance.ts");
   const question = makeQuestion({ sourceChunkIds: ["chunk-1"] });
@@ -288,4 +307,105 @@ test("Gemini provider configuration fails closed when its key is missing", () =>
     if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = originalKey;
   }
+});
+
+test("undefined database columns are recognized as schema blockers", () => {
+  const { isUndefinedColumnError } = createTsLoader()("lib/database-errors.ts");
+  assert.equal(isUndefinedColumnError({ code: "42703" }), true);
+  assert.equal(isUndefinedColumnError({ code: "PGRST202" }), false);
+  assert.equal(isUndefinedColumnError(null), false);
+});
+
+test("draft, edit, regeneration, review and publish callers match the SQL RPC contract", () => {
+  const read = (filename) => fs.readFileSync(path.join(projectRoot, filename), "utf8");
+  const saveRoute = read("app/api/tests/route.ts");
+  const editRoute = read("app/api/tests/[id]/route.ts");
+  const regenerateRoute = read("app/api/tests/[id]/questions/[questionId]/regenerate/route.ts");
+  const publishRoute = read("app/api/tests/[id]/publish/route.ts");
+  const repair = read("supabase/repairs/reconcile_test_workflow_v3_review_candidate.sql");
+  const saveFunction = repair.slice(
+    repair.indexOf("create or replace function public.save_draft_test"),
+    repair.indexOf("create or replace function public.update_test_questions")
+  );
+
+  assert.match(saveRoute, /rpc\("save_draft_test"/);
+  for (const key of ["explanation", "sourceChunkIds", "groundingStatus", "validationStatus", "validationMetadata"]) {
+    assert.ok(saveRoute.includes(`${key}:`), `draft RPC payload must include ${key}`);
+  }
+  for (const field of ["explanation", "sourceChunkIds", "validationStatus"]) {
+    const jsonKey = field[0].toLowerCase() + field.slice(1);
+    assert.ok(saveFunction.includes(`q.item->>'${jsonKey}'`) || saveFunction.includes(`q.item->'${jsonKey}'`),
+      `save_draft_test must persist ${field}`);
+  }
+  assert.match(saveFunction, /coalesce\(q\.item->'validationMetadata','\{\}'::jsonb\)/);
+  assert.match(saveFunction, /'needs_review'/);
+  assert.match(repair, /new\.grounding_status := 'needs_review'/);
+  assert.match(repair, /add column if not exists explanation text;/i);
+  assert.match(repair, /save_draft_test\(p_syllabus_id uuid,p_generation_config jsonb,p_questions jsonb\)\s*returns jsonb/i);
+  assert.match(repair, /update_test_questions\(p_test_id uuid,p_title text,p_subject text,p_difficulty text,p_questions jsonb\)\s*returns void/i);
+  assert.match(repair, /replace_test_question\(\s*p_test_id uuid, p_question_id uuid, p_question jsonb\s*\)\s*returns void/i);
+  assert.match(repair, /attest_test_review\(p_test_id uuid\)\s*returns void/i);
+  assert.match(repair, /publish_test\(p_test_id uuid\)\s*returns void/i);
+  assert.match(editRoute, /rpc\("update_test_questions"/);
+  assert.match(regenerateRoute, /rpc\("replace_test_question"/);
+  assert.match(publishRoute, /rpc\("attest_test_review"/);
+  assert.match(publishRoute, /rpc\("publish_test"/);
+  assert.ok(publishRoute.indexOf('rpc("attest_test_review"') < publishRoute.indexOf('rpc("publish_test"'));
+  assert.match(repair, /jsonb_array_length\(new\.source_chunk_ids\)=0/);
+  assert.match(repair, /reviewed_by=auth\.uid\(\), reviewed_at=statement_timestamp\(\)/);
+
+  // Assertions for targeted live schema repair
+  const targetedRepair = read("supabase/repairs/targeted_live_schema_repair.sql");
+  assert.match(targetedRepair, /create or replace function public\.save_draft_test/i);
+  assert.match(targetedRepair, /create or replace function public\.update_test_questions/i);
+  assert.match(targetedRepair, /create or replace function public\.replace_test_question/i);
+  assert.match(targetedRepair, /create or replace function public\.attest_test_review/i);
+  assert.match(targetedRepair, /create or replace function public\.publish_test/i);
+  assert.match(targetedRepair, /create or replace function public\.claim_google_form_creation/i);
+  assert.match(targetedRepair, /create or replace function public\.record_google_form_creation_form/i);
+  assert.match(targetedRepair, /create or replace function public\.release_google_form_creation/i);
+  assert.match(targetedRepair, /scores_test_google_response_id_uidx/i);
+  assert.match(targetedRepair, /google_form_creation_attempts/i);
+  assert.match(targetedRepair, /grant select, insert, update on public\.google_credentials to service_role/i);
+});
+
+test("Google Forms score webhook validates schema, counts and response IDs", () => {
+  const { googleFormScoreWebhookSchema } = createTsLoader()("lib/validation/schemas.ts");
+  const valid = googleFormScoreWebhookSchema.safeParse({
+    formId: "form-1234567890",
+    responseId: "resp-abc-123",
+    studentName: "Ada Lovelace",
+    studentEmail: "ada@example.edu",
+    score: 8,
+    totalQuestions: 10,
+    submittedAt: new Date().toISOString(),
+  });
+  assert.equal(valid.success, true);
+
+  const missingScore = googleFormScoreWebhookSchema.safeParse({
+    formId: "form-1234567890",
+    responseId: "resp-abc-123",
+  });
+  assert.equal(missingScore.success, false);
+
+  const invalidFormId = googleFormScoreWebhookSchema.safeParse({
+    formId: "short",
+    responseId: "resp-1",
+    score: 5,
+    totalQuestions: 5,
+  });
+  assert.equal(invalidFormId.success, false);
+});
+
+test("generation model avoids the unresponsive gemini-3.8-flash, is overridable, and requests are time-bounded", () => {
+  const { resolveGenerationModel, DEFAULT_GENERATION_MODEL, GENERATION_TIMEOUT_MS } =
+    createTsLoader()("lib/ai/model.ts");
+  assert.equal(resolveGenerationModel({}), DEFAULT_GENERATION_MODEL);
+  assert.notEqual(DEFAULT_GENERATION_MODEL, "gemini-3.8-flash");
+  assert.equal(resolveGenerationModel({ GEMINI_GENERATION_MODEL: "gemini-3-flash-preview" }), "gemini-3-flash-preview");
+  assert.equal(resolveGenerationModel({ GEMINI_GENERATION_MODEL: "bad model;x" }), DEFAULT_GENERATION_MODEL);
+  assert.ok(GENERATION_TIMEOUT_MS > 0 && GENERATION_TIMEOUT_MS <= 120_000);
+  const gemini = fs.readFileSync(path.join(projectRoot, "lib/ai/gemini.ts"), "utf8");
+  assert.ok(!gemini.includes("gemini-3.8-flash"));
+  assert.ok(gemini.includes("timeout: GENERATION_TIMEOUT_MS"));
 });

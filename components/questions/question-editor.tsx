@@ -14,10 +14,13 @@ export function validateQuestions(questions: Question[], requireExplanation = fa
     if (!q.question.trim()) errors.push(`Question ${i + 1}: question text cannot be empty.`);
     if (q.options.length !== 4) errors.push(`Question ${i + 1}: must have exactly 4 options.`);
     if (q.options.some((o) => !o.trim())) errors.push(`Question ${i + 1}: options cannot be empty.`);
+    if (new Set(q.options.map((option) => option.trim().toLocaleLowerCase())).size !== q.options.length) {
+      errors.push(`Question ${i + 1}: answer options must be distinct.`);
+    }
     if ((requireExplanation || q.explanation !== undefined) && !q.explanation?.trim()) {
       errors.push(`Question ${i + 1}: explanation is required.`);
     }
-    if (q.correctAnswerIndex < 0 || q.correctAnswerIndex > 3)
+    if (!Number.isInteger(q.correctAnswerIndex) || q.correctAnswerIndex < 0 || q.correctAnswerIndex > 3)
       errors.push(`Question ${i + 1}: select a correct answer.`);
   });
 

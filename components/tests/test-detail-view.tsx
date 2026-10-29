@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Pencil, RefreshCw, X } from "lucide-react";
 import type { Test } from "@/types/test";
@@ -27,40 +27,51 @@ export function TestDetailView({
   const [publishConfirmationOpen, setPublishConfirmationOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const saveInFlight = useRef(false);
   const router = useRouter();
   const { toast } = useToast();
 
+  useEffect(() => {
+    if (!editing) setQuestions(initialQuestions);
+  }, [initialQuestions, editing]);
+
   async function handleSave() {
+    if (saveInFlight.current) return;
     const errors = validateQuestions(questions);
     if (errors.length > 0) {
       setError(errors[0]);
       return;
     }
+    saveInFlight.current = true;
     setError(null);
     setSaving(true);
+    try {
+      const res = await fetch(`/api/tests/${test.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: test.title,
+          subject: test.subject,
+          difficulty: test.difficulty,
+          questions,
+        }),
+      });
+      const json = await res.json().catch(() => null);
 
-    const res = await fetch(`/api/tests/${test.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: test.title,
-        subject: test.subject,
-        difficulty: test.difficulty,
-        questions,
-      }),
-    });
+      if (!res.ok || !json?.success) {
+        setError(json?.error || "Failed to save changes.");
+        return;
+      }
 
-    const json = await res.json();
-    setSaving(false);
-
-    if (!res.ok || !json.success) {
-      setError(json.error || "Failed to save changes.");
-      return;
+      toast("Test updated.");
+      setEditing(false);
+      router.refresh();
+    } catch {
+      setError("Could not reach the server. Your changes were not confirmed as saved.");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
     }
-
-    toast("Test updated.");
-    setEditing(false);
-    router.refresh();
   }
 
   async function handleRegenerate(questionId: string) {
@@ -110,7 +121,7 @@ export function TestDetailView({
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {test.status === "published" ? (
-          <CreateFormButton testId={test.id} initialFormUrl={test.google_form_url} />
+          <CreateFormButton testId={test.id} initialFormId={test.google_form_id} initialFormUrl={test.google_form_url} />
         ) : (
           <Badge variant="muted">Draft — faculty review required</Badge>
         )}

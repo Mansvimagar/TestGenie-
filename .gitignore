@@ -43,3 +43,6 @@ npm-debug.log*
 *.tsbuildinfo
 next-env.d.ts
 testgenie-mvp.zip
+
+# Local database backups - never commit
+/backups/

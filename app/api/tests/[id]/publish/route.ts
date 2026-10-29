@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { fail, ok } from "@/lib/api-response";
+import { isUndefinedColumnError } from "@/lib/database-errors";
 import { assessQuestionQuality } from "@/lib/validation/question-quality";
 import { publishTestRequestSchema, questionSchema } from "@/lib/validation/schemas";
 import { createClient } from "@/lib/supabase/server";
@@ -31,12 +32,27 @@ export async function POST(
 
   const { data: rows, error: questionsError } = await supabase
     .from("questions")
-    .select("id, topic, question, options, correct_answer_index, explanation")
+    .select("id, topic, question, options, correct_answer_index, explanation, source_chunk_ids")
     .eq("test_id", id)
     .order("position", { ascending: true });
 
-  if (questionsError) return fail("Failed to load questions for review.", 500);
+  if (questionsError) {
+    console.error("[publish] Failed to load questions:", {
+      code: questionsError.code,
+      message: questionsError.message,
+      details: questionsError.details,
+      hint: questionsError.hint,
+    });
+
+    if (isUndefinedColumnError(questionsError)) {
+      return fail("Question review database schema is incomplete. Run the reviewed database preflight and repair before retrying.", 503);
+    }
+    return fail("Failed to load questions for review.", 500);
+  }
   if (!rows?.length) return fail("Add at least one question before publishing.", 422);
+  if (rows.some((row) => !Array.isArray(row.source_chunk_ids) || row.source_chunk_ids.length === 0)) {
+    return fail("Every question needs syllabus source evidence before publishing. Regenerate or revise the unsupported questions.", 422);
+  }
 
   const questions: Question[] = [];
   for (const row of rows) {
@@ -64,10 +80,23 @@ export async function POST(
     return fail(`Resolve question issues before publishing: ${blockingIssues.slice(0, 3).join(" ")}`, 422);
   }
 
+  // Persist the authenticated faculty member's explicit review action. The
+  // database rechecks ownership, scope, provenance, and question validity.
+  const { error: reviewError } = await supabase.rpc("attest_test_review", { p_test_id: id });
+  if (reviewError) {
+    if (reviewError.code === "PGRST202" || reviewError.code === "42883") {
+      return fail("Review attestation is not configured yet. Apply the reviewed database repair and retry.", 503);
+    }
+    return fail("Faculty review could not be recorded. Confirm the questions and syllabus evidence, then retry.", 422);
+  }
+
   const { error: publishError } = await supabase.rpc("publish_test", { p_test_id: id });
   if (publishError) {
     if (publishError.code === "PGRST202" || publishError.code === "42883") {
       return fail("Publishing is not configured yet. Apply the pending database migration and retry.", 503);
+    }
+    if (/source|syllabus|review|question|duplicate|explanation|options|draft/i.test(publishError.message)) {
+      return fail("Publication was blocked by database review. Check explanations, duplicate warnings, syllabus evidence, and the saved faculty review, then retry.", 422);
     }
     return fail("Unable to publish this test. Refresh it and review its status and questions.", 409);
   }
