@@ -46,3 +46,6 @@ testgenie-mvp.zip
 
 # Local database backups - never commit
 /backups/
+
+/database-backup/
+provenance-search.txt
