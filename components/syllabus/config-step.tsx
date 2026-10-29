@@ -15,6 +15,7 @@ export interface TestConfig {
   difficulty: Difficulty;
   unit: string | null;
   topic: string | null;
+  allowPartial?: boolean;
 }
 
 export function ConfigStep({
@@ -34,6 +35,7 @@ export function ConfigStep({
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
   const [unit, setUnit] = useState<string | null>(null);
   const [topic, setTopic] = useState<string | null>(null);
+  const [allowPartial, setAllowPartial] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const selectedUnit = outline.units.find((entry) => entry.name === unit);
@@ -58,6 +60,7 @@ export function ConfigStep({
       difficulty,
       unit,
       topic,
+      allowPartial,
     });
   }
 
@@ -143,6 +146,11 @@ export function ConfigStep({
         <label className="mb-1 block text-xs font-medium text-slate-400">Question Type</label>
         <Input value="Multiple Choice" disabled className="opacity-60" />
       </div>
+
+      <label className="flex items-center gap-2 text-xs text-slate-400">
+        <input type="checkbox" checked={allowPartial} onChange={(e) => setAllowPartial(e.target.checked)} />
+        Allow partial results if some questions cannot be generated
+      </label>
 
       <Button type="submit" loading={loading} className="self-start">
         {loading ? loadingLabel || "Generating..." : "Generate Questions"}

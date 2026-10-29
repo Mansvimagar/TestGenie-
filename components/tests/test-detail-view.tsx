@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { ErrorState } from "@/components/ui/error-state";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { CreateFormButton } from "@/components/forms/create-form-button";
+import { AddIdentityFieldsButton } from "@/components/forms/add-identity-fields-button";
+import { SyncScoresButton } from "@/components/scores/sync-scores-button";
 import { useToast } from "@/components/ui/toast";
 
 export function TestDetailView({
@@ -121,7 +123,11 @@ export function TestDetailView({
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {test.status === "published" ? (
-          <CreateFormButton testId={test.id} initialFormId={test.google_form_id} initialFormUrl={test.google_form_url} />
+          <div className="flex flex-col gap-3">
+            <CreateFormButton testId={test.id} initialFormId={test.google_form_id} initialFormUrl={test.google_form_url} />
+            {test.google_form_id && <AddIdentityFieldsButton testId={test.id} />}
+            {test.google_form_id && <SyncScoresButton testId={test.id} />}
+          </div>
         ) : (
           <Badge variant="muted">Draft — faculty review required</Badge>
         )}

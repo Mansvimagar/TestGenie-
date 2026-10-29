@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { fail, ok } from "@/lib/api-response";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { googleFormScoreWebhookSchema } from "@/lib/validation/schemas";
+import { formatStudentIdentity } from "@/lib/scores/identity";
 
 function hasValidWebhookSecret(request: NextRequest, expected: string): boolean {
   const authorization = request.headers.get("authorization") ?? "";
@@ -44,7 +45,12 @@ export async function POST(request: NextRequest) {
   const { error: upsertError } = await supabase.from("scores").upsert({
     test_id: test.id,
     google_response_id: parsed.data.responseId,
-    student_name: parsed.data.studentName || parsed.data.studentEmail || "Google Forms respondent",
+    student_name: formatStudentIdentity({
+      name: parsed.data.studentName || parsed.data.studentEmail || "Google Forms respondent",
+      rollNo: parsed.data.studentRollNo,
+      className: parsed.data.studentClass,
+      division: parsed.data.studentDivision,
+    }),
     student_email: parsed.data.studentEmail ?? "",
     score,
     total_questions: test.question_count,

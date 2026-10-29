@@ -5,7 +5,9 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/forms.body",
   "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/forms.responses.readonly",
 ];
+export const RESPONSES_SCOPE = "https://www.googleapis.com/auth/forms.responses.readonly";
 
 export function isGoogleConfigured(): boolean {
   return Boolean(
@@ -46,7 +48,7 @@ export async function exchangeCodeAndStore(userId: string, code: string): Promis
   if (tokens.scope) {
     const grantedScopes = new Set(tokens.scope.split(/\s+/));
     if (GOOGLE_SCOPES.some((scope) => !grantedScopes.has(scope))) {
-      throw new Error("Google did not grant the Forms and Drive permissions required by TestGenie.");
+      throw new Error("Google did not grant the Forms and Drive permissions required by TestGenie (Forms, Drive and Forms responses). Reconnect and accept every permission.");
     }
   }
 

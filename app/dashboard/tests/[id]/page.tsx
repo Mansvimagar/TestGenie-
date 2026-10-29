@@ -4,15 +4,17 @@ import { BarChart3 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
+import { ResponsesTable } from "@/components/scores/responses-table";
 import { TestDetailView } from "@/components/tests/test-detail-view";
 import type { Question } from "@/types/question";
 
 export default async function TestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
 
   const { data: test } = await supabase.from("tests").select("*").eq("id", id).maybeSingle();
-  if (!test) notFound();
+  if (!test || !user || test.user_id !== user.id) notFound();
 
   const { data: questionRows } = await supabase
     .from("questions")
@@ -76,10 +78,12 @@ export default async function TestDetailPage({ params }: { params: Promise<{ id:
     (value): value is string => typeof value === "string" && value.length > 0
   );
 
-  const { count: scoreCount } = await supabase
+  const { data: scoreRows } = await supabase
     .from("scores")
-    .select("id", { count: "exact", head: true })
-    .eq("test_id", id);
+    .select("id, student_name, student_email, score, total_questions, percentage, submitted_at")
+    .eq("test_id", id)
+    .order("submitted_at", { ascending: false });
+  const scoreCount = scoreRows?.length ?? 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -102,11 +106,13 @@ export default async function TestDetailPage({ params }: { params: Promise<{ id:
           className="mt-2 inline-flex items-center gap-1.5 text-sm text-indigo-400 hover:underline"
         >
           <BarChart3 className="h-3.5 w-3.5" />
-          View {scoreCount ?? 0} score{scoreCount === 1 ? "" : "s"} for this test
+          View {scoreCount} score{scoreCount === 1 ? "" : "s"} for this test
         </Link>
       </div>
 
       <TestDetailView test={test} initialQuestions={questions} />
+
+      {test.status === "published" && <ResponsesTable scores={scoreRows ?? []} />}
     </div>
   );
 }

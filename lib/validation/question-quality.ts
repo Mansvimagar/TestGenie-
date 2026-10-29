@@ -124,3 +124,17 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   const overlap = intersectionSize(a, b);
   return overlap / (a.size + b.size - overlap);
 }
+
+/** Keeps the first of any exact or near-duplicate question stems (same threshold as assessQuestionQuality). */
+export function dedupeQuestions<T extends { question: string }>(questions: T[]): T[] {
+  const kept: T[] = [];
+  for (const candidate of questions) {
+    const duplicate = kept.some(
+      (existing) =>
+        normalize(existing.question) === normalize(candidate.question) ||
+        jaccard(terms(existing.question), terms(candidate.question)) >= 0.82
+    );
+    if (!duplicate) kept.push(candidate);
+  }
+  return kept;
+}

@@ -31,6 +31,7 @@ export default function GeneratePage() {
   const [generatingLabel, setGeneratingLabel] = useState("Retrieving syllabus context...");
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const saveDraftInFlight = useRef(false);
   const router = useRouter();
 
@@ -69,6 +70,7 @@ export default function GeneratePage() {
           unit: nextConfig.unit,
           topic: nextConfig.topic,
           questionType: "mcq",
+          ...(nextConfig.allowPartial ? { allowPartial: true } : {}),
         }),
       });
       const json = await res.json();
@@ -76,6 +78,11 @@ export default function GeneratePage() {
         throw new Error(json.error || "AI generation failed. Please try again.");
       }
       setQuestions(json.data.questions);
+      setNotice(
+        json.data.partial
+          ? `Only ${json.data.questions.length} of ${json.data.requestedCount} questions could be generated. You asked to allow partial results; review them or go back and generate again.`
+          : null
+      );
       setStep("review");
     } catch (err) {
       setError(err instanceof Error ? err.message : "AI generation failed. Please try again.");
@@ -163,7 +170,16 @@ export default function GeneratePage() {
 
       {step === "config" && (
         <Card>
-          {error && <div className="mb-4"><ErrorState message={error} /></div>}
+          {error && (
+            <div className="mb-4 flex flex-col items-start gap-2">
+              <ErrorState message={error} />
+              {config && (
+                <Button variant="secondary" onClick={() => void handleConfigSubmit(config)} loading={generating}>
+                  Retry
+                </Button>
+              )}
+            </div>
+          )}
           {ingestionResult && (
             <ConfigStep
               outline={ingestionResult.outline}
@@ -178,6 +194,7 @@ export default function GeneratePage() {
       {step === "review" && (
         <div className="flex flex-col gap-4">
           {error && <ErrorState message={error} />}
+          {notice && <p role="status" className="text-sm text-amber-300">{notice}</p>}
           {saveMessage && <p role="status" className="text-sm text-emerald-400">{saveMessage}</p>}
           <QuestionEditor questions={questions} onChange={setQuestions} />
           <div className="flex justify-end">

@@ -1,10 +1,11 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { ExternalLink, FileSpreadsheet } from "lucide-react";
+import { Copy, ExternalLink, FileSpreadsheet, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
 import { useToast } from "@/components/ui/toast";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 
 export function CreateFormButton({
   testId,
@@ -20,8 +21,20 @@ export function CreateFormButton({
   const [formUrl, setFormUrl] = useState(initialFormUrl);
   const [formId, setFormId] = useState(initialFormId);
   const [needsRecovery, setNeedsRecovery] = useState(false);
+  const [manualCopy, setManualCopy] = useState(false);
   const inFlight = useRef(false);
   const { toast } = useToast();
+
+  async function copyLink() {
+    if (!formUrl) return;
+    if (await copyToClipboard(formUrl)) {
+      setManualCopy(false);
+      toast("Student link copied.");
+    } else {
+      setManualCopy(true);
+      toast("Could not copy automatically. Copy the link shown in the box.", "error");
+    }
+  }
 
   async function handleCreate(recover = false) {
     if (inFlight.current) return;
@@ -70,12 +83,42 @@ export function CreateFormButton({
       )}
       <div className="flex flex-wrap items-center gap-2">
         {formUrl && (
-          <a href={formUrl} target="_blank" rel="noreferrer">
-            <Button variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              Open Google Form
-            </Button>
-          </a>
+          <div className="flex w-full flex-col gap-2 rounded-lg border border-slate-800 p-3">
+            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Student link</span>
+            <a href={formUrl} target="_blank" rel="noreferrer" className="break-all text-sm text-indigo-300 underline">
+              {formUrl}
+            </a>
+            {manualCopy && (
+              <input
+                readOnly
+                autoFocus
+                value={formUrl}
+                onFocus={(event) => event.currentTarget.select()}
+                aria-label="Student link"
+                className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200"
+              />
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={() => void copyLink()}>
+                <Copy className="h-4 w-4" />
+                Copy link
+              </Button>
+              <a href={formUrl} target="_blank" rel="noreferrer">
+                <Button variant="secondary">
+                  <ExternalLink className="h-4 w-4" />
+                  Open
+                </Button>
+              </a>
+              {formId && (
+                <a href={`https://docs.google.com/forms/d/${encodeURIComponent(formId)}/edit`} target="_blank" rel="noreferrer">
+                  <Button variant="secondary">
+                    <Pencil className="h-4 w-4" />
+                    Edit form (faculty)
+                  </Button>
+                </a>
+              )}
+            </div>
+          </div>
         )}
         {needsRecovery ? (
           <Button onClick={() => void handleCreate(true)} loading={loading} className="self-start">

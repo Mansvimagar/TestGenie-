@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ScoresTable } from "@/components/scores/scores-table";
 import type { ScoreWithTest } from "@/types/score";
@@ -9,11 +10,22 @@ export default async function ScoresPage({
 }) {
   const { testId } = await searchParams;
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
+  // Explicit ownership filter in addition to RLS: only this faculty member's tests.
   const { data, error } = await supabase
     .from("scores")
-    .select("*, tests!inner(title)")
+    .select("*, tests!inner(title, user_id)")
+    .eq("tests.user_id", user.id)
     .order("submitted_at", { ascending: false });
+
+  const { data: ownTests } = await supabase
+    .from("tests")
+    .select("id, title")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+  const tests = (ownTests ?? []).map((t) => ({ id: t.id as string, title: t.title as string }));
 
   const scores: ScoreWithTest[] = (data ?? []).map((row) => ({
     id: row.id,
@@ -38,7 +50,7 @@ export default async function ScoresPage({
           Scores could not be loaded. Refresh the page or try again later.
         </p>
       ) : (
-        <ScoresTable scores={scores} initialTestFilter={testId} />
+        <ScoresTable scores={scores} tests={tests} initialTestFilter={testId} />
       )}
     </div>
   );

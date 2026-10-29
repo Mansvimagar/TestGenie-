@@ -6,6 +6,8 @@
  *
  * The app deduplicates by (test, Google response ID), so trigger retries are safe.
  */
+const IDENTITY_TITLES = ["Full Name", "Roll No", "Class", "Division"];
+
 function onTestGenieFormSubmit(event) {
   if (!event || !event.response || !event.source) {
     throw new Error("Install this as a Google Forms on-form-submit trigger.");
@@ -19,7 +21,16 @@ function onTestGenieFormSubmit(event) {
   }
 
   const response = event.response;
-  const gradedResponses = response.getGradableItemResponses();
+  // Identity items ("Full Name", "Roll No", "Class", "Division") are ungraded and
+  // are read by title; only the remaining items count towards the score.
+  const identity = {};
+  response.getItemResponses().forEach((itemResponse) => {
+    const title = itemResponse.getItem().getTitle();
+    if (IDENTITY_TITLES.indexOf(title) !== -1) identity[title] = String(itemResponse.getResponse() || "").trim();
+  });
+  const gradedResponses = response.getGradableItemResponses().filter(
+    (itemResponse) => IDENTITY_TITLES.indexOf(itemResponse.getItem().getTitle()) === -1
+  );
   const itemScores = gradedResponses.map((itemResponse) => itemResponse.getScore());
   if (itemScores.length === 0 || itemScores.some((value) => typeof value !== "number")) {
     throw new Error("Google Forms did not provide a graded score for this response.");
@@ -29,8 +40,11 @@ function onTestGenieFormSubmit(event) {
   const payload = {
     formId: event.source.getId(),
     responseId: response.getId(),
-    studentName: email || "Google Forms respondent",
+    studentName: identity["Full Name"] || email || "Google Forms respondent",
     studentEmail: email,
+    studentRollNo: identity["Roll No"] || "",
+    studentClass: identity["Class"] || "",
+    studentDivision: identity["Division"] || "",
     score: itemScores.reduce((total, value) => total + value, 0),
     totalQuestions: itemScores.length,
     submittedAt: response.getTimestamp().toISOString(),

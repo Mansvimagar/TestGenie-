@@ -409,3 +409,545 @@ test("generation model avoids the unresponsive gemini-3.8-flash, is overridable,
   assert.ok(!gemini.includes("gemini-3.8-flash"));
   assert.ok(gemini.includes("timeout: GENERATION_TIMEOUT_MS"));
 });
+
+test("Google Form gets four ungraded required identity items first and recovery matching accounts for them", () => {
+  const { buildFormRequests, formMatchesQuestions, IDENTITY_FIELD_TITLES } =
+    createTsLoader()("lib/google/form-structure.ts");
+  const questions = [
+    { id: "q1", question: "Capital of France?", options: ["Paris", "Rome", "Oslo", "Bern"], correctAnswerIndex: 0 },
+    { id: "q2", question: "2 + 2?", options: ["3", "4", "5", "6"], correctAnswerIndex: 1 },
+  ];
+  assert.deepEqual([...IDENTITY_FIELD_TITLES], ["Full Name", "Roll No", "Class", "Division"]);
+
+  const requests = buildFormRequests("Maths", questions);
+  assert.equal(requests[0].updateSettings.settings.quizSettings.isQuiz, true);
+  const items = requests.filter((r) => r.createItem).map((r) => r.createItem);
+  assert.equal(items.length, 6);
+  items.forEach((entry, index) => assert.equal(entry.location.index, index));
+  items.slice(0, 4).forEach((entry, index) => {
+    const q = entry.item.questionItem.question;
+    assert.equal(entry.item.title, IDENTITY_FIELD_TITLES[index]);
+    assert.equal(q.required, true);
+    assert.ok(q.textQuestion);
+    assert.equal(q.grading, undefined);
+  });
+  items.slice(4).forEach((entry, i) => {
+    assert.equal(entry.item.questionItem.question.grading.pointValue, 1);
+    assert.equal(entry.item.title, questions[i].question);
+  });
+
+  // Rebuild the form as Google would return it and check recovery matching.
+  const form = { settings: { quizSettings: { isQuiz: true } }, items: items.map((entry) => ({ ...entry.item })) };
+  assert.equal(formMatchesQuestions(form, questions), true);
+  assert.equal(formMatchesQuestions({ ...form, items: form.items.slice(4) }, questions), false);
+  assert.equal(formMatchesQuestions({ ...form, items: form.items.slice(0, 5) }, questions), false);
+});
+
+test("score ingest payload accepts identity fields and stores/parses them in student_name", () => {
+  const { googleFormScoreWebhookSchema } = createTsLoader()("lib/validation/schemas.ts");
+  const { formatStudentIdentity, parseStudentIdentity } = createTsLoader()("lib/scores/identity.ts");
+  const payload = {
+    formId: "form-1234567890", responseId: "r1", studentName: "Ada | Lovelace",
+    studentRollNo: "42", studentClass: "TE", studentDivision: "B", score: 3, totalQuestions: 5,
+  };
+  assert.equal(googleFormScoreWebhookSchema.safeParse(payload).success, true);
+  assert.equal(googleFormScoreWebhookSchema.safeParse({ ...payload, studentRollNo: "x".repeat(61) }).success, false);
+  assert.equal(googleFormScoreWebhookSchema.safeParse({ ...payload, unknown: 1 }).success, false);
+
+  const stored = formatStudentIdentity({ name: payload.studentName, rollNo: "42", className: "TE", division: "B" });
+  assert.equal(stored, "Ada / Lovelace | Roll 42 | Class TE | Div B");
+  assert.deepEqual(parseStudentIdentity(stored), { name: "Ada / Lovelace", rollNo: "42", className: "TE", division: "B" });
+  assert.deepEqual(parseStudentIdentity("Legacy Name"), { name: "Legacy Name", rollNo: "", className: "", division: "" });
+  assert.equal(formatStudentIdentity({ name: "Solo" }), "Solo");
+});
+
+test("server-side Forms sync maps scores and identity answers by question ID", () => {
+  const { mapFormResponses, ResponseMappingError } = createTsLoader()("lib/google/response-mapper.ts");
+  const { parseStudentIdentity } = createTsLoader()("lib/scores/identity.ts");
+  const text = (id, title) => ({ title, questionItem: { question: { questionId: id, required: true, textQuestion: {} } } });
+  const graded = (id, title) => ({ title, questionItem: { question: { questionId: id, grading: { pointValue: 1 } } } });
+  // Identity items deliberately in a non-standard order: matching must use IDs, not position.
+  const form = { items: [text("i2", "Roll No"), text("i1", "Full Name"), text("i3", "Class"), text("i4", "Division"), graded("g1", "Q1"), graded("g2", "Q2")] };
+  const answer = (id, value) => [id, { questionId: id, textAnswers: { answers: [{ value }] } }];
+  const responses = [
+    { responseId: "r1", lastSubmittedTime: "2026-01-01T00:00:00Z", totalScore: 2, answers: Object.fromEntries([answer("i1", "Ada | L"), answer("i2", "42"), answer("i3", "TE"), answer("i4", "B")]) },
+    { responseId: "r2", createTime: "2026-01-02T00:00:00Z", respondentEmail: "x@y.edu", answers: { g1: { grade: { score: 1 } }, g2: { grade: { score: 0 } } } },
+    { responseId: "r3", answers: { g1: { grade: { score: 1 } } } },
+    { responseId: "r4", totalScore: 9 },
+    { totalScore: 1 },
+  ];
+  const { rows, skipped } = mapFormResponses(form, responses, 2);
+  assert.equal(rows.length, 2);
+  assert.equal(skipped, 3);
+  assert.equal(rows[0].google_response_id, "r1");
+  assert.equal(rows[0].score, 2);
+  assert.equal(rows[0].percentage, 100);
+  assert.deepEqual(parseStudentIdentity(rows[0].student_name), { name: "Ada / L", rollNo: "42", className: "TE", division: "B" });
+  assert.equal(rows[1].score, 1);
+  assert.equal(rows[1].percentage, 50);
+  assert.equal(parseStudentIdentity(rows[1].student_name).name, "x@y.edu");
+  assert.throws(() => mapFormResponses(form, responses, 3), ResponseMappingError);
+});
+
+test("score sync route is owner-scoped and reuses the idempotent upsert; responses scope is requested", () => {
+  const route = fs.readFileSync(path.join(projectRoot, "app/api/scores/sync/route.ts"), "utf8");
+  assert.ok(route.includes('.eq("user_id", user.id)'));
+  assert.ok(route.includes('onConflict: "test_id,google_response_id"'));
+  const auth = fs.readFileSync(path.join(projectRoot, "lib/google/auth.ts"), "utf8");
+  assert.ok(auth.includes("forms.responses.readonly"));
+  const responses = fs.readFileSync(path.join(projectRoot, "lib/google/responses.ts"), "utf8");
+  assert.ok(responses.includes('"scope_missing"') && responses.includes('"not_connected"'));
+});
+
+function fakeIdentityClient(form, { responses = false } = {}) {
+  const calls = { batchUpdate: [], listed: 0 };
+  return {
+    calls,
+    getForm: async () => form,
+    hasAnyResponse: async () => { calls.listed += 1; return responses; },
+    batchUpdate: async (_id, body) => { calls.batchUpdate.push(body); },
+  };
+}
+
+test("old forms: identity fields are added once, never with responses, and never touch graded items", async () => {
+  const { addIdentityFields, inspectIdentityFields, IdentityFieldsError } = createTsLoader()("lib/google/identity-fields.ts");
+  const { formMatchesQuestions, identityFieldState } = createTsLoader()("lib/google/form-structure.ts");
+  const questions = [{ id: "q1", question: "Q one?", options: ["a", "b", "c", "d"], correctAnswerIndex: 2 }];
+  const gradedItem = { title: "Q one?", questionItem: { question: { required: true, choiceQuestion: { type: "RADIO", options: ["a", "b", "c", "d"].map((value) => ({ value })) }, grading: { pointValue: 1, correctAnswers: { answers: [{ value: "c" }] } } } } };
+  const oldForm = () => ({ revisionId: "rev1", settings: { quizSettings: { isQuiz: true } }, items: [structuredClone(gradedItem)] });
+
+  // Old form, no responses -> inserts exactly four createItem requests at 0-3.
+  const client = fakeIdentityClient(oldForm());
+  assert.equal(await addIdentityFields(client, "form-1234567890"), "added");
+  const [body] = client.calls.batchUpdate;
+  assert.equal(body.requests.length, 4);
+  assert.deepEqual(body.requests.map((r) => r.createItem.location.index), [0, 1, 2, 3]);
+  assert.ok(body.requests.every((r) => r.createItem && !r.createItem.item.questionItem.question.grading));
+  assert.deepEqual(body.writeControl, { requiredRevisionId: "rev1" });
+
+  // Result of that insert is recognised by recovery matching.
+  const updated = oldForm();
+  updated.items = [...body.requests.map((r) => structuredClone(r.createItem.item)), ...updated.items];
+  assert.equal(identityFieldState(updated), "present");
+  assert.equal(formMatchesQuestions(updated, questions), true);
+  assert.equal(formMatchesQuestions(oldForm(), questions), false);
+
+  // Idempotent: nothing is sent when the fields already exist, and responses are not even queried.
+  const again = fakeIdentityClient(updated);
+  assert.equal(await addIdentityFields(again, "form-1234567890"), "already_present");
+  assert.equal(again.calls.batchUpdate.length, 0);
+  assert.equal(again.calls.listed, 0);
+
+  // Responses exist -> refused, nothing written.
+  const withResponses = fakeIdentityClient(oldForm(), { responses: true });
+  await assert.rejects(() => addIdentityFields(withResponses, "form-1234567890"), (err) => err instanceof IdentityFieldsError && err.code === "has_responses");
+  assert.equal(withResponses.calls.batchUpdate.length, 0);
+  assert.equal((await inspectIdentityFields(withResponses, "form-1234567890")).state, "missing_has_responses");
+
+  // Partial identity items -> refused.
+  const partial = oldForm();
+  partial.items.push({ title: "Roll No", questionItem: { question: { required: true, textQuestion: {} } } });
+  const partialClient = fakeIdentityClient(partial);
+  await assert.rejects(() => addIdentityFields(partialClient, "form-1234567890"), (err) => err.code === "partial");
+  assert.equal(partialClient.calls.batchUpdate.length, 0);
+});
+
+test("clipboard helper uses the Clipboard API, falls back to execCommand, and never throws", async () => {
+  const { copyToClipboard } = createTsLoader()("lib/copy-to-clipboard.ts");
+  const saved = { navigator: globalThis.navigator, document: globalThis.document, secure: globalThis.isSecureContext };
+  const set = (key, value) => Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+  const makeDocument = (execResult) => {
+    const log = { appended: 0, removed: 0, copied: 0 };
+    const textarea = { style: {}, setAttribute() {}, select() {}, setSelectionRange() {} };
+    return { log, document: {
+      createElement: () => textarea,
+      body: { appendChild: () => { log.appended += 1; }, removeChild: () => { log.removed += 1; } },
+      execCommand: (cmd) => { assert.equal(cmd, "copy"); log.copied += 1; if (execResult instanceof Error) throw execResult; return execResult; },
+    } };
+  };
+  try {
+    // Secure context with Clipboard API.
+    let written = null;
+    set("navigator", { clipboard: { writeText: async (t) => { written = t; } } });
+    set("isSecureContext", true);
+    assert.equal(await copyToClipboard("https://forms.example/x"), true);
+    assert.equal(written, "https://forms.example/x");
+
+    // navigator.clipboard undefined (insecure context) -> textarea + execCommand.
+    set("navigator", {});
+    set("isSecureContext", false);
+    let env = makeDocument(true);
+    set("document", env.document);
+    assert.equal(await copyToClipboard("link"), true);
+    assert.deepEqual(env.log, { appended: 1, removed: 1, copied: 1 });
+
+    // Clipboard API rejects -> fallback is used.
+    set("navigator", { clipboard: { writeText: async () => { throw new Error("denied"); } } });
+    set("isSecureContext", true);
+    env = makeDocument(true);
+    set("document", env.document);
+    assert.equal(await copyToClipboard("link"), true);
+
+    // execCommand returns false, then throws -> false, textarea always cleaned up, no throw.
+    set("navigator", {});
+    env = makeDocument(false);
+    set("document", env.document);
+    assert.equal(await copyToClipboard("link"), false);
+    env = makeDocument(new Error("boom"));
+    set("document", env.document);
+    assert.equal(await copyToClipboard("link"), false);
+    assert.equal(env.log.removed, 1);
+
+    // No DOM at all.
+    set("document", undefined);
+    assert.equal(await copyToClipboard("link"), false);
+  } finally {
+    set("navigator", saved.navigator);
+    set("document", saved.document);
+    set("isSecureContext", saved.secure);
+  }
+});
+
+test("per-test results: newest first, identity columns, summary and safe CSV export", () => {
+  const { toResultRows, summarizeResults, buildResultsCsv, csvFilename } = createTsLoader()("lib/scores/results.ts");
+  const score = (id, name, points, submitted, email = "") => ({
+    id, student_name: name, student_email: email, score: points, total_questions: 4,
+    percentage: points * 25, submitted_at: submitted,
+  });
+  const rows = toResultRows([
+    score("a", "Ada | Roll 7 | Class TE | Div A", 4, "2026-10-01T10:00:00Z"),
+    score("b", "=HYPERLINK(\"x\") | Roll 9 | Class TE | Div B", 2, "2026-10-03T10:00:00Z", "b@x.edu"),
+    score("c", "Legacy, Name", 3, "2026-10-02T10:00:00Z"),
+  ]);
+  assert.deepEqual(rows.map((r) => r.id), ["b", "c", "a"]);
+  assert.deepEqual([rows[2].rollNo, rows[2].className, rows[2].division], ["7", "TE", "A"]);
+  assert.equal(rows[1].rollNo, "");
+
+  const summary = summarizeResults(rows);
+  assert.deepEqual(summary, { count: 3, averageScore: 3, averagePercentage: 75, total: 4 });
+  assert.equal(summarizeResults([]).count, 0);
+  assert.equal(summarizeResults([{ score: 1, total: 2, percentage: 50 }, { score: 1, total: 4, percentage: 25 }]).total, 0);
+
+  const csv = buildResultsCsv(rows);
+  const lines = csv.trim().split("\r\n");
+  assert.equal(lines[0], "Name,Roll No,Class,Division,Email,Score,Total,Percentage,Submitted at");
+  assert.equal(lines.length, 4);
+  assert.ok(lines[1].startsWith('"\'=HYPERLINK(""x"")",9,TE,B,b@x.edu,2,4,50,'), lines[1]);
+  assert.ok(lines[2].startsWith('"Legacy, Name",,,,'), lines[2]);
+  assert.equal(csvFilename("MLOps: Intro / Basics!"), "mlops-intro-basics-results.csv");
+  assert.equal(csvFilename("***"), "test-results.csv");
+});
+
+test("test detail and scores pages only read the signed-in faculty member's own data", () => {
+  const read = (file) => fs.readFileSync(path.join(projectRoot, file), "utf8");
+  const detail = read("app/dashboard/tests/[id]/page.tsx");
+  assert.ok(detail.includes("test.user_id !== user.id"));
+  assert.ok(detail.includes("ResponsesTable"));
+  const scoresPage = read("app/dashboard/scores/page.tsx");
+  assert.ok(scoresPage.includes('.eq("tests.user_id", user.id)'));
+  assert.ok(/from\("tests"\)[\s\S]*?\.eq\("user_id", user\.id\)/.test(scoresPage));
+  const table = read("components/scores/scores-table.tsx");
+  assert.ok(table.includes("Download CSV") && table.includes("tests.map"));
+  assert.ok(read("components/scores/responses-table.tsx").includes("click Sync scores"));
+});
+
+const providerError = (status, message = "provider failure") => Object.assign(new Error(message), { status });
+const timeoutError = () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+
+function fakeClock() {
+  const clock = { t: 0, slept: [] };
+  clock.now = () => clock.t;
+  clock.sleep = async (ms) => { clock.slept.push(ms); clock.t += ms; };
+  return clock;
+}
+
+test("provider errors are classified: 503 busy, 429 rate limit, timeouts, 404 model, 400/401/403 config", () => {
+  const { classifyProviderError, isTransientProviderError } = createTsLoader()("lib/ai/model.ts");
+  assert.equal(classifyProviderError(providerError(503)), "busy");
+  assert.equal(classifyProviderError(new Error('{"error":{"code":503,"status":"UNAVAILABLE"}}')), "busy");
+  assert.equal(classifyProviderError(providerError(429)), "rate_limit");
+  assert.equal(classifyProviderError(new Error("RESOURCE_EXHAUSTED: quota")), "rate_limit");
+  assert.equal(classifyProviderError(timeoutError()), "timeout");
+  assert.equal(classifyProviderError(new TypeError("fetch failed")), "timeout");
+  assert.equal(classifyProviderError(providerError(404)), "model_unavailable");
+  for (const status of [400, 401, 403]) assert.equal(classifyProviderError(providerError(status)), "config");
+  assert.equal(classifyProviderError(new Error("something odd")), "unknown");
+  assert.equal(isTransientProviderError(providerError(503)), true);
+  assert.equal(isTransientProviderError(providerError(403)), false);
+  assert.equal(isTransientProviderError(providerError(404)), false);
+});
+
+test("model chain: env override, defaults prefer stable models, and unusable models are skipped", () => {
+  const { resolveModelChain, filterAvailableModels, DEFAULT_MODEL_CHAIN, planBatches } = createTsLoader()("lib/ai/model.ts");
+  assert.deepEqual(resolveModelChain({}), [...DEFAULT_MODEL_CHAIN]);
+  assert.ok(!DEFAULT_MODEL_CHAIN.some((name) => /3\.8|3\.7|2\.0|2\.5|latest/.test(name)));
+  assert.ok(/preview/.test(DEFAULT_MODEL_CHAIN.at(-1)) && !DEFAULT_MODEL_CHAIN.slice(0, -1).some((n) => /preview/.test(n)));
+  assert.deepEqual(resolveModelChain({ GEMINI_MODEL_CHAIN: "model-a, model-b ,bad name;x,model-a" }), ["model-a", "model-b"]);
+  assert.equal(resolveModelChain({ GEMINI_GENERATION_MODEL: "custom-model" })[0], "custom-model");
+
+  const chain = ["a", "b", "c"];
+  assert.deepEqual(filterAvailableModels(chain, new Set(["b", "c", "z"])), ["b", "c"]);
+  assert.deepEqual(filterAvailableModels(chain, null), chain);
+  assert.deepEqual(filterAvailableModels(chain, new Set(["z"])), chain);
+
+  assert.deepEqual(planBatches(5), [5]);
+  assert.deepEqual(planBatches(6), [3, 3]);
+  assert.deepEqual(planBatches(12), [4, 4, 4]);
+  assert.deepEqual(planBatches(50), Array(10).fill(5));
+  assert.ok(planBatches(13).every((n) => n <= 5) && planBatches(13).reduce((a, b) => a + b) === 13);
+});
+
+test("runWithFallback: success, 503 and 429 and timeout retry on the next model with backoff and jitter", async () => {
+  const { runWithFallback } = createTsLoader()("lib/ai/model.ts");
+  const run = async (script) => {
+    const clock = fakeClock();
+    const calls = [];
+    const result = await runWithFallback({
+      models: ["m1", "m2", "m3"], now: clock.now, sleep: clock.sleep, random: () => 1,
+      call: async (model) => { calls.push(model); const step = script.shift(); if (step instanceof Error) throw step; return step; },
+    });
+    return { result, calls, clock };
+  };
+
+  assert.deepEqual((await run(["ok"])).calls, ["m1"]);
+
+  const busy = await run([providerError(503), "ok"]);
+  assert.deepEqual(busy.calls, ["m1", "m2"]);
+  assert.equal(busy.result, "ok");
+
+  const mixed = await run([providerError(503), providerError(429), timeoutError(), "ok"]);
+  assert.deepEqual(mixed.calls, ["m1", "m2", "m3", "m1"]);
+  // random()=1 -> full cap: 1s, 2s, 4s (exponential).
+  assert.deepEqual(mixed.clock.slept, [1000, 2000, 4000]);
+
+  // random()=0 -> half the cap, so every delay stays within [cap/2, cap].
+  const jitter = fakeClock();
+  let failures = 0;
+  await runWithFallback({
+    models: ["m1"], now: jitter.now, sleep: jitter.sleep, random: () => 0,
+    call: async () => { if (failures++ < 2) throw providerError(503); return "ok"; },
+  });
+  assert.deepEqual(jitter.slept, [500, 1000]);
+});
+
+test("runWithFallback: 400/401/403/unknown are not retried; 404 skips the model without waiting", async () => {
+  const { runWithFallback, ProviderCallError } = createTsLoader()("lib/ai/model.ts");
+  for (const status of [400, 401, 403]) {
+    const clock = fakeClock();
+    let calls = 0;
+    await assert.rejects(
+      () => runWithFallback({ models: ["m1", "m2"], now: clock.now, sleep: clock.sleep, call: async () => { calls += 1; throw providerError(status); } }),
+      (err) => err instanceof ProviderCallError && err.kind === "config"
+    );
+    assert.equal(calls, 1);
+    assert.deepEqual(clock.slept, []);
+  }
+
+  const clock = fakeClock();
+  const seen = [];
+  const result = await runWithFallback({
+    models: ["gone", "m2"], now: clock.now, sleep: clock.sleep,
+    call: async (model) => { seen.push(model); if (model === "gone") throw providerError(404); return "ok"; },
+  });
+  assert.equal(result, "ok");
+  assert.deepEqual(seen, ["gone", "m2"]);
+  assert.deepEqual(clock.slept, []);
+
+  await assert.rejects(
+    () => runWithFallback({ models: ["a", "b"], now: clock.now, sleep: clock.sleep, call: async () => { throw providerError(404); } }),
+    (err) => err.kind === "config"
+  );
+});
+
+test("runWithFallback stops at the time budget and reports the last failure kind", async () => {
+  const { runWithFallback, ProviderCallError } = createTsLoader()("lib/ai/model.ts");
+  const clock = fakeClock();
+  let calls = 0;
+  await assert.rejects(
+    () => runWithFallback({
+      models: ["m1", "m2"], budgetMs: 10_000, now: clock.now, sleep: clock.sleep, random: () => 1,
+      call: async () => { calls += 1; clock.t += 3_000; throw providerError(503); },
+    }),
+    (err) => err instanceof ProviderCallError && err.kind === "busy"
+  );
+  assert.ok(clock.t <= 10_000 + 3_000, `ran to ${clock.t}ms`);
+  assert.ok(calls >= 2 && calls < 8);
+
+  const rate = fakeClock();
+  await assert.rejects(
+    () => runWithFallback({ models: ["m1"], budgetMs: 1_500, now: rate.now, sleep: rate.sleep, random: () => 1, call: async () => { throw providerError(429); } }),
+    (err) => err.kind === "rate_limit"
+  );
+});
+
+function loadGeminiWithFake(script) {
+  const calls = [];
+  class FakeGenAI {
+    constructor(opts) {
+      this.timeout = opts?.httpOptions?.timeout;
+      this.models = {
+        generateContent: async ({ model }) => {
+          calls.push({ model, timeout: this.timeout });
+          const step = script.shift();
+          if (step instanceof Error) throw step;
+          return { text: JSON.stringify(step) };
+        },
+      };
+    }
+  }
+  const loader = createTsLoader({
+    "@google/genai": { GoogleGenAI: FakeGenAI, Type: { OBJECT: "OBJECT", ARRAY: "ARRAY", STRING: "STRING", INTEGER: "INTEGER" } },
+  });
+  return { gemini: loader("lib/ai/gemini.ts"), calls };
+}
+
+const mcq = (n) => ({
+  topic: "Pipelines",
+  question: `Which statement about topic number ${n} and unique concept zeta${n} is correct`,
+  options: [`alpha ${n}`, `beta ${n}`, `gamma ${n}`, `delta ${n}`],
+  correctAnswerIndex: 0,
+  explanation: `Because concept zeta${n} says so.`,
+});
+const batchOf = (start, size) => ({ questions: Array.from({ length: size }, (_, i) => mcq(start + i)) });
+const chunk = { chunkId: "c1", syllabusId: "s1", content: "concept", unit: null, topic: null, subtopic: null, pageStart: 1, pageEnd: 1, similarity: 0.9, embeddingProvider: "gemini" };
+const genConfig = (count) => ({ syllabusId: "s1", title: "T", subject: "S", questionCount: count, difficulty: "easy", questionType: "mcq" });
+
+async function withGeminiEnv(fn) {
+  const saved = { p: process.env.AI_PROVIDER, k: process.env.GEMINI_API_KEY, f: globalThis.fetch };
+  process.env.AI_PROVIDER = "gemini";
+  process.env.GEMINI_API_KEY = "test-key-not-real";
+  globalThis.fetch = async () => { throw new Error("no network in tests"); };
+  try {
+    return await fn();
+  } finally {
+    if (saved.p === undefined) delete process.env.AI_PROVIDER; else process.env.AI_PROVIDER = saved.p;
+    if (saved.k === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = saved.k;
+    globalThis.fetch = saved.f;
+  }
+}
+
+test("batched generation: 12 questions run as 3 batches of 4, merge, validate each batch and recover from a 503", async () => {
+  await withGeminiEnv(async () => {
+    const clock = fakeClock();
+    const { gemini, calls } = loadGeminiWithFake([batchOf(0, 4), providerError(503), batchOf(10, 4), batchOf(20, 4)]);
+    const validated = [];
+    const result = await gemini.generateGroundedQuestionBatches(genConfig(12), [chunk], {
+      retry: { now: clock.now, sleep: clock.sleep, random: () => 0 },
+      validateBatch: (batch) => { validated.push(batch.length); return batch.map((q) => ({ ...q, sourceChunkIds: ["c1"] })); },
+    });
+    assert.equal(result.partial, false);
+    assert.equal(result.questions.length, 12);
+    assert.deepEqual(validated, [4, 4, 4]);
+    assert.ok(result.questions.every((q) => q.sourceChunkIds[0] === "c1"));
+    assert.equal(calls.length, 4);
+    assert.notEqual(calls[1].model, calls[2].model);
+    assert.ok(calls.every((call) => call.timeout <= 90_000));
+  });
+});
+
+test("batched generation: duplicates across batches are removed", async () => {
+  await withGeminiEnv(async () => {
+    const clock = fakeClock();
+    const { gemini } = loadGeminiWithFake([batchOf(0, 3), batchOf(0, 3)]);
+    const result = await gemini.generateGroundedQuestionBatches(genConfig(6), [chunk], { retry: { now: clock.now, sleep: clock.sleep } });
+    assert.equal(result.questions.length, 3);
+  });
+});
+
+test("batched generation: a failed batch fails clearly unless partial results were requested", async () => {
+  await withGeminiEnv(async () => {
+    const attempt = async (options) => {
+      const clock = fakeClock();
+      const { gemini } = loadGeminiWithFake([batchOf(0, 3), ...Array(10).fill(providerError(429))]);
+      return gemini.generateGroundedQuestionBatches(genConfig(6), [chunk], {
+        ...options,
+        retry: { now: clock.now, sleep: clock.sleep, random: () => 0 },
+      });
+    };
+
+    await assert.rejects(() => attempt({}), (err) =>
+      err.kind === "rate_limit" && /rate limit or quota/.test(err.message) && !/429|RESOURCE|status/i.test(err.message));
+
+    const partial = await attempt({ allowPartial: true });
+    assert.equal(partial.partial, true);
+    assert.equal(partial.questions.length, 3);
+    assert.equal(partial.requested, 6);
+
+    // allowPartial without any finished batch still fails.
+    const clock = fakeClock();
+    const { gemini } = loadGeminiWithFake(Array(10).fill(providerError(503)));
+    await assert.rejects(
+      () => gemini.generateGroundedQuestionBatches(genConfig(3), [chunk], { allowPartial: true, retry: { now: clock.now, sleep: clock.sleep, random: () => 0 } }),
+      (err) => err.kind === "busy" && /busy/.test(err.message)
+    );
+  });
+});
+
+test("batched generation: timeouts and config errors map to distinct safe messages and statuses", async () => {
+  await withGeminiEnv(async () => {
+    const { SAFE_FAILURE_MESSAGES, httpStatusForFailure } = createTsLoader()("lib/ai/model.ts");
+    const run = async (script) => {
+      const clock = fakeClock();
+      const { gemini, calls } = loadGeminiWithFake(script);
+      try {
+        await gemini.generateGroundedQuestionBatches(genConfig(2), [chunk], { retry: { now: clock.now, sleep: clock.sleep, random: () => 0 } });
+      } catch (err) {
+        return { err, calls };
+      }
+      throw new Error("expected failure");
+    };
+    const timeout = await run(Array(10).fill(timeoutError()));
+    assert.equal(timeout.err.kind, "timeout");
+    assert.equal(timeout.err.message, SAFE_FAILURE_MESSAGES.timeout);
+    const config = await run([providerError(403, "API key not valid: AIzaSySecretSecretSecret123")]);
+    assert.equal(config.err.kind, "config");
+    assert.equal(config.calls.length, 1);
+    assert.ok(!/AIza|API key not valid/.test(config.err.message));
+    assert.deepEqual(["busy", "rate_limit", "timeout", "config"].map(httpStatusForFailure), [503, 429, 504, 503]);
+    const messages = new Set(["busy", "rate_limit", "timeout", "config"].map((k) => SAFE_FAILURE_MESSAGES[k]));
+    assert.equal(messages.size, 4);
+  });
+});
+
+test("models.list is cached for 10 minutes and a failure falls back to the unfiltered chain", async () => {
+  const { getAvailableGenerationModels, resetModelAvailabilityCache } = createTsLoader()("lib/ai/model-availability.ts");
+  resetModelAvailabilityCache();
+  let fetches = 0;
+  let clock = 0;
+  const fetchImpl = async () => {
+    fetches += 1;
+    return { ok: true, json: async () => ({ models: [
+      { name: "models/gemini-3.5-flash", supportedGenerationMethods: ["generateContent"] },
+      { name: "models/embed", supportedGenerationMethods: ["embedContent"] },
+    ] }) };
+  };
+  const first = await getAvailableGenerationModels("k", { fetchImpl, now: () => clock });
+  assert.deepEqual([...first], ["gemini-3.5-flash"]);
+  clock += 9 * 60_000;
+  await getAvailableGenerationModels("k", { fetchImpl, now: () => clock });
+  assert.equal(fetches, 1);
+  clock += 2 * 60_000;
+  await getAvailableGenerationModels("k", { fetchImpl, now: () => clock });
+  assert.equal(fetches, 2);
+  resetModelAvailabilityCache();
+  assert.equal(await getAvailableGenerationModels("k", { fetchImpl: async () => { throw new Error("down"); } }), null);
+});
+
+test("generate route: duration cap exceeds the generation budget, partial is opt-in, UI keeps inputs and offers Retry", () => {
+  const read = (file) => fs.readFileSync(path.join(projectRoot, file), "utf8");
+  const model = createTsLoader()("lib/ai/model.ts");
+  const route = read("app/api/generate/route.ts");
+  const maxDuration = Number(/export const maxDuration = (\d+)/.exec(route)?.[1]);
+  assert.ok(maxDuration * 1000 > model.REQUEST_GENERATION_BUDGET_MS + 30_000, `maxDuration ${maxDuration}s`);
+  assert.ok(model.BATCH_RETRY_BUDGET_MS <= 100_000 && model.GENERATION_TIMEOUT_MS <= model.BATCH_RETRY_BUDGET_MS);
+  assert.equal(model.MAX_BATCH_QUESTIONS, 5);
+  assert.ok(route.includes("allowPartial: input.allowPartial === true"));
+  const { groundedGenerateRequestSchema } = createTsLoader()("lib/validation/schemas.ts");
+  const base = { syllabusId: "6f1c9a4e-1b2c-4d3e-8f90-123456789abc", testTitle: "T", subject: "S", questionCount: 5, difficulty: "easy" };
+  assert.equal(groundedGenerateRequestSchema.safeParse(base).success, true);
+  assert.equal(groundedGenerateRequestSchema.safeParse({ ...base, allowPartial: true }).success, true);
+  assert.equal(groundedGenerateRequestSchema.safeParse({ ...base, allowPartial: "yes" }).success, false);
+  const page = read("app/dashboard/generate/page.tsx");
+  assert.ok(page.includes("Retry") && page.includes("handleConfigSubmit(config)"));
+  assert.ok(read("components/syllabus/config-step.tsx").includes("Allow partial results"));
+});

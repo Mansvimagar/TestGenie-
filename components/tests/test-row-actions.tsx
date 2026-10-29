@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Eye, ExternalLink, Trash2 } from "lucide-react";
+import { Copy, Eye, ExternalLink, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 
 export function TestRowActions({
   testId,
@@ -16,6 +17,7 @@ export function TestRowActions({
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [manualLink, setManualLink] = useState<string | null>(null);
   const router = useRouter();
   const { toast } = useToast();
 
@@ -34,19 +36,33 @@ export function TestRowActions({
   }
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <Link href={`/dashboard/tests/${testId}`} className="text-slate-400 hover:text-slate-100" title="View">
         <Eye className="h-4 w-4" />
       </Link>
+      {googleFormUrl && (
+        <button
+          onClick={async () => {
+            const copied = await copyToClipboard(googleFormUrl);
+            setManualLink(copied ? null : googleFormUrl);
+            if (copied) toast("Student link copied.");
+            else toast("Could not copy automatically. Copy the link shown below.", "error");
+          }}
+          className="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100"
+          title="Copy student link"
+        >
+          <Copy className="h-4 w-4" /> Copy link
+        </button>
+      )}
       {googleFormUrl && (
         <a
           href={googleFormUrl}
           target="_blank"
           rel="noreferrer"
-          className="text-slate-400 hover:text-slate-100"
-          title="Open Google Form"
+          className="flex items-center gap-1 text-sm text-slate-400 hover:text-slate-100"
+          title="Open student Google Form"
         >
-          <ExternalLink className="h-4 w-4" />
+          <ExternalLink className="h-4 w-4" /> Open
         </a>
       )}
       <button
@@ -56,6 +72,17 @@ export function TestRowActions({
       >
         <Trash2 className="h-4 w-4" />
       </button>
+
+      {manualLink && (
+        <input
+          readOnly
+          autoFocus
+          value={manualLink}
+          onFocus={(event) => event.currentTarget.select()}
+          aria-label="Student link"
+          className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"
+        />
+      )}
 
       <ConfirmDialog
         open={confirmOpen}

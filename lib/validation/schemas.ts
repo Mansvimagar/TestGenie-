@@ -53,6 +53,8 @@ export const groundedGenerateRequestSchema = z.object({
   topic: z.string().trim().min(1).nullable().optional(),
   additionalInstructions: z.string().trim().max(1000).optional(),
   questionType: z.literal("mcq").optional(),
+  // Explicit opt-in: return the batches that succeeded if a later batch fails.
+  allowPartial: z.boolean().optional(),
 }).strict();
 
 // Retained for compatibility with existing consumers. The active
@@ -132,6 +134,9 @@ export const googleFormScoreWebhookSchema = z.object({
   responseId: z.string().trim().min(1).max(200),
   studentName: z.string().trim().max(200).optional(),
   studentEmail: z.string().trim().max(320).optional(),
+  studentRollNo: z.string().trim().max(60).optional(),
+  studentClass: z.string().trim().max(60).optional(),
+  studentDivision: z.string().trim().max(60).optional(),
   score: z.number().int().min(0).max(50),
   totalQuestions: z.number().int().min(1).max(50),
   submittedAt: z.string().datetime({ offset: true }).optional(),
